@@ -1,8 +1,7 @@
 mod account_manager;
-mod user_manager;
+mod user;
 
 use account_manager::AccountManager;
-use anyhow::Context;
 use anyhow::Result;
 use chrono::Duration;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -10,7 +9,7 @@ use std::{
     env,
     fmt::{self, Display, Formatter},
 };
-use user_manager::{User, UserManager};
+use user::User;
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -20,17 +19,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    Status {
-        user: String,
-    },
-    AddUser(UserArgs),
-    UpdateUser(UserArgs),
-    DeleteUser {
-        user: String,
-    },
+    Status(UserArgs),
     Approve {
-        #[arg(short, long)]
-        user: String,
+        #[command(flatten)]
+        user: UserArgs,
 
         #[arg(short, long, default_value_t = ApproveDuration::Hour, value_enum)]
         duration: ApproveDuration,
@@ -39,15 +31,15 @@ enum Command {
         force: bool,
     },
     Revoke {
-        #[arg(short, long)]
-        user: String,
+        #[command(flatten)]
+        user: UserArgs,
 
         #[arg(short, long)]
         ip: Option<String>,
     },
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Clone)]
 struct UserArgs {
     #[arg(short, long)]
     name: String,
@@ -94,43 +86,24 @@ async fn main() -> Result<()> {
     env::set_var("OPENSSL_CONF", "openssl.conf");
 
     let cli = Cli::parse();
-    let user_manager = UserManager::default();
     let account_manager = AccountManager::new()?;
 
-    let get_user = |name| {
-        user_manager
-            .fetch_user(name)
-            .with_context(|| format!("Failed to fetch credentials for user {name}"))
-    };
-
     match cli.command {
-        Command::Status { user } => display_status(&user_manager, &account_manager, &user).await?,
-        Command::AddUser(args) => {
-            let user = args.into();
-            user_manager.add_user(&user)?;
-            println!("Added user {} successfully", user.name());
-        }
-        Command::UpdateUser(args) => {
-            let user = args.into();
-            user_manager.update_user(&user)?;
-            println!("Updated user {} successfully", user.name());
-        }
-        Command::DeleteUser { user } => {
-            user_manager.delete_user(&user)?;
-            println!("Deleted user {user} successfully");
-        }
+        Command::Status(user) => display_status(&account_manager, &user.into()).await?,
         Command::Approve {
             user,
             duration,
             force,
         } => {
+            let user = user.into();
             let ip = account_manager
-                .approve(&get_user(&user)?, duration.into(), force)
+                .approve(&user, duration.into(), force)
                 .await?;
             println!("Approved {ip} for {user} for 1 {duration} successfully");
         }
         Command::Revoke { user, ip } => {
-            let ip = account_manager.revoke(&get_user(&user)?, ip).await?;
+            let user = user.into();
+            let ip = account_manager.revoke(&user, ip).await?;
             println!("Revoked {ip} for {user} successfully");
         }
     }
@@ -138,13 +111,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn display_status(
-    user_manager: &UserManager,
-    account_manager: &AccountManager,
-    user: &str,
-) -> Result<()> {
-    let user = user_manager.fetch_user(user)?;
-    let status = account_manager.status(&user).await?;
+async fn display_status(account_manager: &AccountManager, user: &User) -> Result<()> {
+    let status = account_manager.status(user).await?;
     let (ip, connection) = status.system_connection();
     println!(
         "Your IP address is {ip} and {}",

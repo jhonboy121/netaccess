@@ -1,4 +1,4 @@
-use crate::user_manager::User;
+use crate::user::User;
 use anyhow::{bail, Context, Ok, Result};
 use chrono::{Duration, FixedOffset, NaiveDateTime, Utc};
 use reqwest::{tls::Version, Client, ClientBuilder, Response};
