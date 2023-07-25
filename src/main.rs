@@ -48,9 +48,9 @@ struct UserArgs {
     password: String,
 }
 
-impl Into<User> for UserArgs {
-    fn into(self) -> User {
-        User::new(self.name, self.password)
+impl From<UserArgs> for User {
+    fn from(val: UserArgs) -> Self {
+        User::new(val.name, val.password)
     }
 }
 
@@ -70,9 +70,9 @@ impl Display for ApproveDuration {
     }
 }
 
-impl Into<usize> for ApproveDuration {
-    fn into(self) -> usize {
-        match self {
+impl From<ApproveDuration> for usize {
+    fn from(val: ApproveDuration) -> Self {
+        match val {
             ApproveDuration::Hour => 1,
             ApproveDuration::Day => 2,
             ApproveDuration::Month => 3,
@@ -145,19 +145,27 @@ async fn display_status(account_manager: &AccountManager, user: &User) -> Result
 }
 
 fn format_duration(duration: &Duration) -> String {
-    let mut strs = Vec::with_capacity(3);
+    let mut fragments = Vec::with_capacity(3);
+    macro_rules! push {
+        ( $unit:expr ) => {
+            fragments.push(format!("{} {}", $unit, stringify!($unit)));
+        };
+    }
     let minutes = duration.num_minutes() % 60;
     if minutes > 0 {
-        strs.push(format!("{} minutes", minutes));
+        push!(minutes);
     }
     let hours = duration.num_hours() % 24;
     if hours > 0 {
-        strs.push(format!("{} hours", hours));
+        push!(hours);
     }
     let days = duration.num_days();
     if days > 0 {
-        strs.push(format!("{days} days"));
+        push!(days);
     }
-    let strs: Vec<String> = strs.into_iter().rev().collect();
-    strs.join(", ")
+    fragments
+        .into_iter()
+        .rev()
+        .collect::<Vec<String>>()
+        .join(", ")
 }

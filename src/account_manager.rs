@@ -263,7 +263,7 @@ impl AccountManager {
 
         let response = self
             .client
-            .post(format!("{URL}{REVOKE_PATH}/{}", ip.to_string()))
+            .post(format!("{URL}{REVOKE_PATH}/{ip}"))
             .send()
             .await
             .context("POST request for revoke failed")?;
