@@ -80,7 +80,7 @@ impl From<ApproveDuration> for usize {
     }
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     env::set_var("OPENSSL_CONF", "openssl.conf");
