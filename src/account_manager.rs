@@ -74,6 +74,7 @@ impl AccountManager {
         ClientBuilder::default()
             .min_tls_version(Version::TLS_1_2)
             .cookie_store(true)
+            .timeout(std::time::Duration::from_secs(5))
             .build()
             .map(|client| Self { client })
     }
