@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::{
     env,
     fmt::{self, Display, Formatter},
+    io,
 };
 use user::User;
 
@@ -19,14 +20,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    Status {
-        #[arg(short, long)]
-        user: String,
-    },
+    Status,
     Approve {
-        #[arg(short, long)]
-        user: String,
-
         #[arg(short, long, default_value_t = ApproveDuration::Hour, value_enum)]
         duration: ApproveDuration,
 
@@ -34,9 +29,6 @@ enum Command {
         force: bool,
     },
     Revoke {
-        #[arg(short, long)]
-        user: String,
-
         #[arg(short, long)]
         ip: Option<String>,
     },
@@ -76,27 +68,31 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let account_manager = AccountManager::new()?;
 
-    let get_user = |user| {
+    let get_user = || {
+        print!("Enter username: ");
+        // user names are expected to be of the format XX19X001
+        let mut buf = String::with_capacity(8);
+        io::stdin()
+            .read_line(&mut buf)
+            .context("Failed to read username")?;
+        println!();
+        let user = buf.trim();
         let password = rpassword::prompt_password(format!("Enter password for {user}:"))
             .context("Failed to read password")?;
-        Ok::<User, anyhow::Error>(User::new(user, password))
+        anyhow::Ok(User::new(user.to_owned(), password))
     };
 
     match cli.command {
-        Command::Status { user } => display_status(&account_manager, &get_user(user)?).await?,
-        Command::Approve {
-            user,
-            duration,
-            force,
-        } => {
-            let user = get_user(user)?;
+        Command::Status => display_status(&account_manager, &get_user()?).await?,
+        Command::Approve { duration, force } => {
+            let user = get_user()?;
             let ip = account_manager
                 .approve(&user, duration.into(), force)
                 .await?;
             println!("Approved {ip} for {user} for 1 {duration} successfully");
         }
-        Command::Revoke { user, ip } => {
-            let user = get_user(user)?;
+        Command::Revoke { ip } => {
+            let user = get_user()?;
             let ip = account_manager.revoke(&user, ip).await?;
             println!("Revoked {ip} for {user} successfully");
         }
