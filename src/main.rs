@@ -2,15 +2,18 @@ mod account_manager;
 mod user;
 
 use account_manager::AccountManager;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::{
     env,
     fmt::{self, Display, Formatter},
     io::{self, Write},
+    time,
 };
 use user::User;
+
+const MIN_SUSPEND_DURATION: u64 = 30;
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -31,6 +34,13 @@ enum Command {
     Revoke {
         #[arg(short, long)]
         ip: Option<String>,
+    },
+    Monitor {
+        #[arg(short, long, default_value_t = 5 * 60)]
+        suspend_duration: u64,
+
+        #[arg(short, long)]
+        quiet: bool,
     },
 }
 
@@ -96,6 +106,22 @@ async fn main() -> Result<()> {
             let ip = account_manager.revoke(&user, ip).await?;
             println!("Revoked {ip} for {user} successfully");
         }
+        Command::Monitor {
+            suspend_duration,
+            quiet,
+        } => {
+            if suspend_duration < MIN_SUSPEND_DURATION {
+                bail!("Suspend duration is less than minimum allowed {MIN_SUSPEND_DURATION}");
+            }
+            let user = get_user()?;
+            monitor(
+                &user,
+                &account_manager,
+                time::Duration::from_secs(suspend_duration),
+                quiet,
+            )
+            .await?;
+        }
     }
 
     Ok(())
@@ -158,4 +184,34 @@ fn format_duration(duration: &Duration) -> String {
         .rev()
         .collect::<Vec<String>>()
         .join(", ")
+}
+
+async fn monitor(
+    user: &User,
+    account_manager: &AccountManager,
+    suspend_duration: time::Duration,
+    quiet: bool,
+) -> Result<()> {
+    macro_rules! println_checked {
+        ( $($arg:tt)* ) => {
+            if !quiet {
+                println!($( $arg )*);
+            }
+        };
+    }
+    println_checked!("Entering monitor mode");
+    loop {
+        let status = account_manager.status(user).await?;
+        let (ip, connection) = status.system_connection();
+        if !connection.is_active() {
+            println_checked!("IP {ip} is not active, approving...");
+            account_manager
+                .approve(user, ApproveDuration::Day.into(), false)
+                .await?;
+            println_checked!("Approved {ip} for 1 {}", ApproveDuration::Day);
+        } else {
+            println_checked!("IP {ip} is active, suspending for {suspend_duration:?}");
+            tokio::time::sleep(suspend_duration).await
+        }
+    }
 }
