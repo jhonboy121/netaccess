@@ -1,5 +1,5 @@
 use crate::user::User;
-use anyhow::{bail, Context, Ok, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::{Duration, FixedOffset, NaiveDateTime, Utc};
 use reqwest::{tls::Version, Client, ClientBuilder, Response};
 use scraper::{ElementRef, Html, Selector};
@@ -55,6 +55,16 @@ impl Status {
     }
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("HTTP request error encountered during an operation: {0}")]
+    ReqwestError(#[from] reqwest::Error),
+    #[error("Invalid user credentials")]
+    InvalidCredentials,
+    #[error("{0}")]
+    Anyhow(#[from] anyhow::Error),
+}
+
 pub struct AccountManager {
     client: Client,
 }
@@ -68,7 +78,7 @@ impl AccountManager {
             .map(|client| Self { client })
     }
 
-    pub async fn status(&self, user: &User) -> Result<Status> {
+    pub async fn status(&self, user: &User) -> Result<Status, Error> {
         self.login(user).await?;
         let ip = local_ip_address::local_ip().context("Failed to get local ip address")?;
         let index_page = self.index_page_response().await?;
@@ -87,7 +97,7 @@ impl AccountManager {
         })
     }
 
-    async fn login(&self, user: &User) -> Result<()> {
+    async fn login(&self, user: &User) -> Result<(), Error> {
         if self.is_logged_in().await? {
             return Ok(());
         }
@@ -100,22 +110,24 @@ impl AccountManager {
             .post(format!("{URL}{LOGIN_PATH}"))
             .form(&login_form)
             .send()
-            .await
-            .context("POST request for login failed")?;
+            .await?;
         if !response.status().is_success() {
-            bail!("Login response is not a success: {response:?}");
+            return Err(Error::Anyhow(anyhow!(
+                "Login response failed with status {}",
+                response.status()
+            )));
         }
-        if response.url().path() != INDEX_PATH {
-            bail!("Unable to login, please check username and password");
+        match response.url().path() {
+            INDEX_PATH => Ok(()),
+            LOGIN_PATH => Err(Error::InvalidCredentials),
+            other => Err(Error::Anyhow(anyhow!(
+                "Unexpected URL path in login response {other}"
+            ))),
         }
-        Ok(())
     }
 
     async fn is_logged_in(&self) -> Result<bool> {
-        let response = self
-            .index_page_response()
-            .await
-            .context("Index page check failed")?;
+        let response = self.index_page_response().await?;
         if !response.status().is_success() {
             bail!("Index page response is not a success: {response:?}");
         }
@@ -128,9 +140,6 @@ impl AccountManager {
 
     fn parse_connections(html: &str) -> Result<HashMap<IpAddr, Connection>> {
         let html = Html::parse_document(html);
-        // if !html.errors.is_empty() {
-        //     bail!("Malformed html body {:#?}", html.errors);
-        // }
         let tbody_selector = Selector::parse("tbody").expect("Failed to create tbody selector");
         let Some(tbody) = html.select(&tbody_selector).next() else {
             bail!("Html does not have a tbody element")
@@ -207,11 +216,13 @@ impl AccountManager {
         Ok(text.to_string())
     }
 
-    pub async fn approve(&self, user: &User, duration_index: usize, force: bool) -> Result<IpAddr> {
-        let status = self
-            .status(user)
-            .await
-            .context("Failed to query current status")?;
+    pub async fn approve(
+        &self,
+        user: &User,
+        duration_index: usize,
+        force: bool,
+    ) -> Result<IpAddr, Error> {
+        let status = self.status(user).await?;
 
         let (ip, connection) = status.system_connection();
 
@@ -229,26 +240,24 @@ impl AccountManager {
             .post(format!("{URL}{APPROVE_PATH}"))
             .form(&approve_form)
             .send()
-            .await
-            .context("POST request for approve failed")?;
+            .await?;
 
         if !response.status().is_success() {
-            bail!("Approve response is not a success: {response:?}");
+            return Err(Error::Anyhow(anyhow!(
+                "Approve response failed with status {}",
+                response.status()
+            )));
         }
-        if response.url().path() != INDEX_PATH {
-            bail!(
-                "Expected {INDEX_PATH} but found {} in approve response url",
-                response.url().path()
-            );
+        match response.url().path() {
+            INDEX_PATH => Ok(*ip),
+            other => Err(Error::Anyhow(anyhow!(
+                "Unexpected URL path in approve response {other}"
+            ))),
         }
-        Ok(*ip)
     }
 
-    pub async fn revoke(&self, user: &User, ip: Option<String>) -> Result<IpAddr> {
-        let status = self
-            .status(user)
-            .await
-            .context("Failed to query current status")?;
+    pub async fn revoke(&self, user: &User, ip: Option<String>) -> Result<IpAddr, Error> {
+        let status = self.status(user).await?;
 
         let ip = match ip {
             Some(ip) => ip
@@ -265,17 +274,19 @@ impl AccountManager {
             .client
             .post(format!("{URL}{REVOKE_PATH}/{ip}"))
             .send()
-            .await
-            .context("POST request for revoke failed")?;
+            .await?;
+
         if !response.status().is_success() {
-            bail!("Revoke response is not a success: {response:?}");
+            return Err(Error::Anyhow(anyhow!(
+                "Revoke response failed with status {}",
+                response.status()
+            )));
         }
-        if response.url().path() != INDEX_PATH {
-            bail!(
-                "Expected {INDEX_PATH} but found {} in revoke response url",
-                response.url().path()
-            );
+        match response.url().path() {
+            INDEX_PATH => Ok(ip),
+            other => Err(Error::Anyhow(anyhow!(
+                "Unexpected URL path in revoke response {other}"
+            ))),
         }
-        Ok(ip)
     }
 }

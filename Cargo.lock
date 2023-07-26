@@ -235,6 +235,7 @@ dependencies = [
  "reqwest",
  "rpassword",
  "scraper",
+ "thiserror",
  "tokio",
 ]
 
