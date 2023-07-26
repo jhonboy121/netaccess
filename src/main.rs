@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::{
     env,
     fmt::{self, Display, Formatter},
-    io,
+    io::{self, Write},
 };
 use user::User;
 
@@ -70,14 +70,14 @@ async fn main() -> Result<()> {
 
     let get_user = || {
         print!("Enter username: ");
+        io::stdout().flush()?;
         // user names are expected to be of the format XX19X001
         let mut buf = String::with_capacity(8);
         io::stdin()
             .read_line(&mut buf)
             .context("Failed to read username")?;
-        println!();
         let user = buf.trim();
-        let password = rpassword::prompt_password(format!("Enter password for {user}:"))
+        let password = rpassword::prompt_password(format!("Enter password for {user}: "))
             .context("Failed to read password")?;
         anyhow::Ok(User::new(user.to_owned(), password))
     };
