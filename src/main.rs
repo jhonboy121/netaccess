@@ -23,22 +23,32 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Query the status of a user account
     Status,
+    /// Approve system IP address for a particular duration
     Approve {
+        /// The duration for which an IP address should be approved for
         #[arg(short, long, default_value_t = ApproveDuration::Hour, value_enum)]
         duration: ApproveDuration,
 
+        /// Forcefully attempt to approve even if system IP is marked as active
         #[arg(short, long, default_value_t = false)]
         force: bool,
     },
+    /// Revoke authorization of an IP address
     Revoke {
+        /// The IP address for which access should be revoked. Do not specify this flag to revoke
+        /// access for your system's IP address
         #[arg(short, long)]
         ip: Option<String>,
     },
+    /// Periodically monitor the status of system IP address and approve if access is revoked
     Monitor {
+        /// The duration of time in seconds to sleep before waking up to check status
         #[arg(short, long, default_value_t = 5 * 60)]
         suspend_duration: u64,
 
+        /// Pass this flag to disable all status logs
         #[arg(short, long)]
         quiet: bool,
     },
