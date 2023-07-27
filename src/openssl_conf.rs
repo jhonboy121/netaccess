@@ -22,11 +22,8 @@ impl OpenSSLConf {
         fs::create_dir_all(&cnf_dir).context("Failed to create openssl config directory")?;
         let path = cnf_dir.join("openssl.cnf");
         fs::write(&path, CNF_BYTES).context("Failed to write openssl config contents to file")?;
+        env::set_var("OPENSSL_CONF", path.display().to_string());
         Ok(Self { path })
-    }
-
-    pub fn set(&self) {
-        env::set_var("OPENSSL_CONF", self.path.display().to_string());
     }
 }
 

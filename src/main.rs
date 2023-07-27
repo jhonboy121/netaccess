@@ -85,7 +85,7 @@ impl From<ApproveDuration> for usize {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
-    let _cnf = set_openssl_conf()?;
+    let _cnf = OpenSSLConf::new()?;
 
     let cli = Cli::parse();
     let account_manager = AccountManager::new()?;
@@ -137,12 +137,6 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn set_openssl_conf() -> Result<OpenSSLConf> {
-    let conf = OpenSSLConf::new()?;
-    conf.set();
-    return Ok(conf);
 }
 
 async fn display_status(account_manager: &AccountManager, user: &User) -> Result<()> {
