@@ -1,0 +1,127 @@
+name: Build and release binaries
+
+on:
+  push:
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+env:
+  bins: bins
+
+jobs:
+  build:
+    runs-on: ${{ matrix.system.os }}
+
+    strategy:
+      fail-fast: true
+      matrix:
+        system:
+          - os: windows-latest
+            targets: x86_64-pc-windows-msvc
+
+          - os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu
+
+          - os: macos-latest
+            targets:
+              x86_64-apple-darwin
+              aarch64-apple-darwin
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      release: ${{ github.ref_name == 'main' && !github.event.pull_request }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v3
+
+      - name: Install rust targets
+        run: |
+          rustup target install ${{ matrix.system.targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "true"
+
+      - name: Build binary
+        run: |
+          cargo build --release $(for target in ${{ matrix.system.targets }}; do echo "--target $target"; done)
+      
+      - name: Move binary to destination dir
+        run: |
+          mkdir build
+          ext=;
+          os=;
+          if [[ $RUNNER_OS == 'Windows' ]]; then
+            os="windows"
+            ext=".exe"
+          elif [[ $RUNNER_OS == 'Linux' ]]; then
+            os="linux"
+          else
+            os="mac"
+          fi
+          for target in ${{ matrix.system.targets }}; do
+            arch=$(echo $target | sed 's/-.*$//')
+            dest=build/$os-$arch
+            mkdir $dest
+            mv target/$target/release/netaccess$ext $dest/
+          done
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        if: ${{ env.release == 'true' }}
+        with:
+          name: ${{ env.bins }}
+          path: build
+          retention-days: 1
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download package manifest
+        run: |
+          curl -H 'Authorization: token ${{ secrets.GITHUB_TOKEN }}' \
+            -H 'Accept: application/vnd.github.v4.raw' \
+            -o Cargo.toml \
+            -L https://api.github.com/repos/$GITHUB_REPOSITORY/contents/Cargo.toml?ref=$GITHUB_REF_NAME
+
+      - uses: SebRollen/toml-action@v1.0.1
+        id: read_version
+        with:
+          file: Cargo.toml
+          field: package.version
+
+      - name: Delete package manifest
+        run: rm -rf Cargo.toml
+
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: ${{ env.bins }}
+
+      - name: Zip contents
+        run: |
+          for dir in $(ls); do
+            cd $dir
+            zip ../$dir.zip *
+            cd -
+          done
+
+      - name: Binary release
+        uses: softprops/action-gh-release@v1
+        with:
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          name: "Netaccess v${{ steps.read_version.outputs.value }}"
+          tag_name: "${{ steps.read_version.outputs.value }}"
+          files: |
+            *.zip
