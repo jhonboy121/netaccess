@@ -58,7 +58,7 @@ impl Status {
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("HTTP request error encountered during an operation: {0}")]
-    ReqwestError(#[from] reqwest::Error),
+    Reqwest(#[from] reqwest::Error),
     #[error("Invalid user credentials")]
     InvalidCredentials,
     #[error(transparent)]

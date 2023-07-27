@@ -29,7 +29,7 @@ impl OpenSSLConf {
 
 impl Drop for OpenSSLConf {
     fn drop(&mut self) {
-        if let Err(_) = fs::remove_file(&self.path) {
+        if fs::remove_file(&self.path).is_err() {
             eprintln!(
                 "Failed to remove openssl conf file {}, you may remove it manually",
                 self.path.display()
