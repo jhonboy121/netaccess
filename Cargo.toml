@@ -13,3 +13,6 @@ scraper = "0.17.1"
 chrono = "0.4.26"
 rpassword = "7.2.0"
 thiserror = "1.0.44"
+
+[target.'cfg(unix)'.dependencies]
+directories = "5.0.1"

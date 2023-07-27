@@ -1,12 +1,14 @@
 mod account_manager;
+#[cfg(target_family = "unix")]
+mod openssl_conf;
 mod user;
 
 use account_manager::AccountManager;
 use anyhow::{bail, Context, Result};
 use chrono::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
+use openssl_conf::OpenSSLConf;
 use std::{
-    env,
     fmt::{self, Display, Formatter},
     io::{self, Write},
     time,
@@ -83,7 +85,7 @@ impl From<ApproveDuration> for usize {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
-    env::set_var("OPENSSL_CONF", "openssl.conf");
+    let _cnf = set_openssl_conf()?;
 
     let cli = Cli::parse();
     let account_manager = AccountManager::new()?;
@@ -135,6 +137,12 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn set_openssl_conf() -> Result<OpenSSLConf> {
+    let conf = OpenSSLConf::new()?;
+    conf.set();
+    return Ok(conf);
 }
 
 async fn display_status(account_manager: &AccountManager, user: &User) -> Result<()> {
