@@ -7,7 +7,6 @@ use account_manager::AccountManager;
 use anyhow::{bail, Context, Result};
 use chrono::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
-use openssl_conf::OpenSSLConf;
 use std::{
     fmt::{self, Display, Formatter},
     io::{self, Write},
@@ -84,8 +83,8 @@ impl From<ApproveDuration> for usize {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    #[cfg(target_os = "linux")]
-    let _cnf = OpenSSLConf::new()?;
+    #[cfg(target_family = "unix")]
+    let _cnf = openssl_conf::OpenSSLConf::new()?;
 
     let cli = Cli::parse();
     let account_manager = AccountManager::new()?;
