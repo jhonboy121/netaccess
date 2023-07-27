@@ -61,8 +61,8 @@ pub enum Error {
     ReqwestError(#[from] reqwest::Error),
     #[error("Invalid user credentials")]
     InvalidCredentials,
-    #[error("{0}")]
-    Anyhow(#[from] anyhow::Error),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }
 
 pub struct AccountManager {
@@ -113,7 +113,7 @@ impl AccountManager {
             .send()
             .await?;
         if !response.status().is_success() {
-            return Err(Error::Anyhow(anyhow!(
+            return Err(Error::Other(anyhow!(
                 "Login response failed with status {}",
                 response.status()
             )));
@@ -121,7 +121,7 @@ impl AccountManager {
         match response.url().path() {
             INDEX_PATH => Ok(()),
             LOGIN_PATH => Err(Error::InvalidCredentials),
-            other => Err(Error::Anyhow(anyhow!(
+            other => Err(Error::Other(anyhow!(
                 "Unexpected URL path in login response {other}"
             ))),
         }
@@ -244,14 +244,14 @@ impl AccountManager {
             .await?;
 
         if !response.status().is_success() {
-            return Err(Error::Anyhow(anyhow!(
+            return Err(Error::Other(anyhow!(
                 "Approve response failed with status {}",
                 response.status()
             )));
         }
         match response.url().path() {
             INDEX_PATH => Ok(*ip),
-            other => Err(Error::Anyhow(anyhow!(
+            other => Err(Error::Other(anyhow!(
                 "Unexpected URL path in approve response {other}"
             ))),
         }
@@ -278,14 +278,14 @@ impl AccountManager {
             .await?;
 
         if !response.status().is_success() {
-            return Err(Error::Anyhow(anyhow!(
+            return Err(Error::Other(anyhow!(
                 "Revoke response failed with status {}",
                 response.status()
             )));
         }
         match response.url().path() {
             INDEX_PATH => Ok(ip),
-            other => Err(Error::Anyhow(anyhow!(
+            other => Err(Error::Other(anyhow!(
                 "Unexpected URL path in revoke response {other}"
             ))),
         }
