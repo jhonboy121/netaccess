@@ -1,5 +1,5 @@
 # Netaccess
-A CLI (command line interface) application to manage internet access without going through a bunch of procedures in netaccess.iitm.ac.in. This application manages all the HTTP requests with only a single command.
+A fast and robust CLI (command line interface) application written in [Rust](https://www.rust-lang.org) to manage internet access without all the hassle with <https://netaccess.iitm.ac.in>. This application is even capable of monitoring and auto authorizing your system's IP address. Note that this application is intended for use by students at IIT Madras alone, and will not work for anyone else.
 
 ## Installation
 
@@ -15,9 +15,9 @@ cargo install --path .
 ```
 
 ### Prebuilt binaries
-* Release page of this repo will have latest binaries for all platforms whenever there are major changes. You may download the one for your system and use it.
-* Download the zip file and extract the contained binary. Copy the path of the directory to which it is extracted and add it to the `PATH` environment variable.
-* For mac users, aarch64 corresponds to the M1/M2 chips and x86_64 is for the Intel variant, and neither of them will work on the other variant so choose accordingly.
+* [Release page](https://github.com/jhonboy121/netaccess/releases) of this repo will have latest binaries for all supported platforms whenever there are major changes.
+* Download the zip file for your system and extract the contained binary. Copy the path of the directory to which it is extracted and add it to the `PATH` environment variable.
+* For mac users, `aarch64` corresponds to the M1/M2 chips and `x86_64` is for the Intel variant, and neither of them will work on the other variant so choose accordingly.
 
 ## Usage
 To print a list of available commands, provide the --help argument. For example:
