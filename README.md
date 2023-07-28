@@ -30,3 +30,7 @@ This will print help for the `status` subcommand.
 ```
 netaccess status --help
 ```
+
+## Notes
+* All commands require your LDAP username and password, and there is no way to safely store it in the system.
+* Username and password will be prompted to enter, and password input will be hidden (for your own safety) so just enter the password and hit enter.
