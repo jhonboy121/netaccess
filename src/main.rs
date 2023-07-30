@@ -1,20 +1,32 @@
 mod account_manager;
+mod monitor;
 #[cfg(target_family = "unix")]
 mod openssl_conf;
 mod user;
 
-use account_manager::AccountManager;
-use anyhow::{bail, Context, Result};
+use account_manager::{AccountManager, Connection};
+use anyhow::{bail, Context};
 use chrono::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
+use crossterm::{
+    cursor::{RestorePosition, SavePosition},
+    execute,
+    terminal::{Clear, ClearType},
+    ExecutableCommand,
+};
+use monitor::{Message, Monitor};
 use std::{
     fmt::{self, Display, Formatter},
     io::{self, Write},
+    net::IpAddr,
+    sync::Arc,
     time,
 };
+use tokio::sync::mpsc;
 use user::User;
 
 const MIN_SUSPEND_DURATION: u64 = 30;
+const MSG_CHANNEL_BUF_SIZE: usize = 20;
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -49,9 +61,9 @@ enum Command {
         #[arg(short, long, default_value_t = 5 * 60)]
         suspend_duration: u64,
 
-        /// Pass this flag to disable all status logs
-        #[arg(short, long)]
-        quiet: bool,
+        /// The duration for which an IP address should be approved for
+        #[arg(short, long, default_value_t = ApproveDuration::Hour, value_enum)]
+        approve_duration: ApproveDuration,
     },
 }
 
@@ -81,13 +93,31 @@ impl From<ApproveDuration> for usize {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InterruptKey {
+    Retry,
+    Wakeup,
+}
+
+impl TryFrom<&str> for InterruptKey {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.to_lowercase().as_str() {
+            "r" => Ok(Self::Retry),
+            "w" => Ok(Self::Wakeup),
+            other => Err(format!("Unknown interrupt key {other}")),
+        }
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+async fn main() -> anyhow::Result<()> {
     #[cfg(target_family = "unix")]
     let _cnf = openssl_conf::OpenSSLConf::new()?;
 
     let cli = Cli::parse();
-    let account_manager = AccountManager::new()?;
+    let account_manager = Arc::new(AccountManager::new()?);
 
     let get_user = || {
         print!("Enter username: ");
@@ -119,36 +149,32 @@ async fn main() -> Result<()> {
         }
         Command::Monitor {
             suspend_duration,
-            quiet,
+            approve_duration,
         } => {
             if suspend_duration < MIN_SUSPEND_DURATION {
                 bail!("Suspend duration is less than minimum allowed {MIN_SUSPEND_DURATION}");
             }
+            io::stdout().execute(SavePosition)?;
             let user = get_user()?;
-            monitor(
-                &user,
-                &account_manager,
+            let mut monitor = Monitor::new(&account_manager);
+            let (message_sender, message_receiver) = mpsc::channel(MSG_CHANNEL_BUF_SIZE);
+            monitor.start(
+                user,
+                approve_duration.into(),
                 time::Duration::from_secs(suspend_duration),
-                quiet,
-            )
-            .await?;
+                message_sender,
+            );
+            handle_monitor_messages(message_receiver).await?;
         }
     }
 
     Ok(())
 }
 
-async fn display_status(account_manager: &AccountManager, user: &User) -> Result<()> {
+async fn display_status(account_manager: &AccountManager, user: &User) -> anyhow::Result<()> {
     let status = account_manager.status(user).await?;
     let (ip, connection) = status.system_connection();
-    println!(
-        "Your IP address is {ip} and {}",
-        if connection.is_active() {
-            format!("active for {}", format_duration(connection.time_left()))
-        } else {
-            String::from("inactive")
-        }
-    );
+    println!("{}", create_connection_status_string(ip, connection));
     let connections = status.connections();
     println!(
         "Number of other registered connections: {}",
@@ -169,6 +195,17 @@ async fn display_status(account_manager: &AccountManager, user: &User) -> Result
         );
     }
     Ok(())
+}
+
+fn create_connection_status_string(ip: &IpAddr, connection: &Connection) -> String {
+    format!(
+        "Your IP address is {ip} and {}",
+        if connection.is_active() {
+            format!("active for {}", format_duration(connection.time_left()))
+        } else {
+            String::from("inactive")
+        }
+    )
 }
 
 fn format_duration(duration: &Duration) -> String {
@@ -197,32 +234,74 @@ fn format_duration(duration: &Duration) -> String {
         .join(", ")
 }
 
-async fn monitor(
-    user: &User,
-    account_manager: &AccountManager,
-    suspend_duration: time::Duration,
-    quiet: bool,
-) -> Result<()> {
-    macro_rules! println_checked {
-        ( $($arg:tt)* ) => {
-            if !quiet {
-                println!($( $arg )*);
+async fn handle_monitor_messages(mut receiver: mpsc::Receiver<Message>) -> anyhow::Result<()> {
+    let restore_cursor = || {
+        execute!(
+            io::stdout(),
+            RestorePosition,
+            Clear(ClearType::FromCursorDown),
+            SavePosition
+        )
+    };
+    restore_cursor()?;
+
+    let listen_for_interrupt = |interrupt_key: InterruptKey| async move {
+        loop {
+            let input = tokio::task::spawn_blocking(|| {
+                let mut buf = String::new();
+                io::stdin().read_line(&mut buf).map(|_| buf)
+            })
+            .await??;
+            if InterruptKey::try_from(input.trim()).is_ok_and(|key| key == interrupt_key) {
+                break;
             }
-        };
-    }
-    println_checked!("Entering monitor mode");
-    loop {
-        let status = account_manager.status(user).await?;
-        let (ip, connection) = status.system_connection();
-        if !connection.is_active() {
-            println_checked!("IP {ip} is not active, approving...");
-            account_manager
-                .approve(user, ApproveDuration::Day.into(), false)
-                .await?;
-            println_checked!("Approved {ip} for 1 {}", ApproveDuration::Day);
-        } else {
-            println_checked!("IP {ip} is active, suspending for {suspend_duration:?}");
-            tokio::time::sleep(suspend_duration).await
+        }
+        tokio::io::Result::Ok(())
+    };
+
+    while let Some(msg) = receiver.recv().await {
+        match msg {
+            Message::Suspended {
+                duration,
+                wake_sender,
+            } => {
+                restore_cursor()?;
+                println!("Suspended for {duration:?}");
+                println!("Enter 'W' (case insensitive) and hit Enter key to wakeup monitor");
+                listen_for_interrupt(InterruptKey::Wakeup).await?;
+                if wake_sender.send(()).is_err() {
+                    bail!("Monitor channel abruptly clossed, exiting");
+                }
+            }
+            Message::CheckingStatus => {
+                restore_cursor()?;
+                println!("Checking status");
+            }
+            Message::Status { ip, connection } => {
+                restore_cursor()?;
+                println!("{}", create_connection_status_string(&ip, &connection));
+                if connection.is_active() {
+                    // We want the user to know about current active IP.
+                    execute!(io::stdout(), SavePosition)?;
+                }
+            }
+            Message::Approving(ip) => {
+                restore_cursor()?;
+                println!("Approved IP {ip}")
+            }
+            Message::Error {
+                error,
+                retry_sender,
+            } => {
+                restore_cursor()?;
+                println!("Monitoring failed : {error}");
+                println!("Enter 'R' (case insensitive) and hit Enter key to restart monitor");
+                listen_for_interrupt(InterruptKey::Retry).await?;
+                if retry_sender.send(()).is_err() {
+                    bail!("Retry channel abruptly clossed, exiting");
+                }
+            }
         }
     }
+    Ok(())
 }

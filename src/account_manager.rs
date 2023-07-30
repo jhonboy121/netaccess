@@ -65,6 +65,7 @@ pub enum Error {
     Other(#[from] anyhow::Error),
 }
 
+#[derive(Debug)]
 pub struct AccountManager {
     client: Client,
 }

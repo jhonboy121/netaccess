@@ -1,6 +1,6 @@
 [package]
 name = "netaccess"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -13,6 +13,7 @@ scraper = "0.17.1"
 chrono = "0.4.26"
 rpassword = "7.2.0"
 thiserror = "1.0.44"
+crossterm = "0.26.1"
 
 [target.'cfg(unix)'.dependencies]
 directories = "5.0.1"
