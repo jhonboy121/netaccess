@@ -22,7 +22,10 @@ use std::{
     sync::Arc,
     time,
 };
-use tokio::sync::mpsc;
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
 use user::User;
 
 const MIN_SUSPEND_DURATION: u64 = 30;
@@ -245,21 +248,32 @@ async fn handle_monitor_messages(mut receiver: mpsc::Receiver<Message>) -> anyho
     };
     restore_cursor()?;
 
-    let listen_for_interrupt = |interrupt_key: InterruptKey| async move {
-        loop {
-            let input = tokio::task::spawn_blocking(|| {
-                let mut buf = String::new();
-                io::stdin().read_line(&mut buf).map(|_| buf)
+    let listen_for_interrupt =
+        |interrupt_key: InterruptKey, interrupt_sender: oneshot::Sender<()>| {
+            tokio::spawn(async move {
+                loop {
+                    let input = tokio::task::spawn_blocking(|| {
+                        let mut buf = String::new();
+                        io::stdin().read_line(&mut buf).map(|_| buf)
+                    })
+                    .await??;
+                    if InterruptKey::try_from(&*input).is_ok_and(|key| key == interrupt_key) {
+                        if interrupt_sender.send(()).is_err() {
+                            bail!("Interrupt channel abruptly clossed");
+                        }
+                        break;
+                    }
+                }
+                anyhow::Ok(())
             })
-            .await??;
-            if InterruptKey::try_from(&*input).is_ok_and(|key| key == interrupt_key) {
-                break;
-            }
-        }
-        tokio::io::Result::Ok(())
-    };
+        };
+
+    let mut interrupt_task: Option<JoinHandle<anyhow::Result<()>>> = None;
 
     while let Some(msg) = receiver.recv().await {
+        if let Some(task) = interrupt_task.take() {
+            task.abort();
+        }
         match msg {
             Message::Suspended {
                 duration,
@@ -268,10 +282,7 @@ async fn handle_monitor_messages(mut receiver: mpsc::Receiver<Message>) -> anyho
                 restore_cursor()?;
                 println!("Suspended for {duration:?}");
                 println!("Enter 'W' (case insensitive) and hit Enter key to wakeup monitor");
-                listen_for_interrupt(InterruptKey::Wakeup).await?;
-                if wake_sender.send(()).is_err() {
-                    bail!("Monitor channel abruptly clossed, exiting");
-                }
+                interrupt_task = listen_for_interrupt(InterruptKey::Wakeup, wake_sender).into();
             }
             Message::CheckingStatus => {
                 restore_cursor()?;
@@ -296,10 +307,7 @@ async fn handle_monitor_messages(mut receiver: mpsc::Receiver<Message>) -> anyho
                 restore_cursor()?;
                 println!("Monitoring failed : {error}");
                 println!("Enter 'R' (case insensitive) and hit Enter key to restart monitor");
-                listen_for_interrupt(InterruptKey::Retry).await?;
-                if retry_sender.send(()).is_err() {
-                    bail!("Retry channel abruptly clossed, exiting");
-                }
+                interrupt_task = listen_for_interrupt(InterruptKey::Retry, retry_sender).into();
             }
         }
     }
