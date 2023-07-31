@@ -103,7 +103,7 @@ impl TryFrom<&str> for InterruptKey {
     type Error = String;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value.to_lowercase().as_str() {
+        match value.to_lowercase().trim() {
             "r" => Ok(Self::Retry),
             "w" => Ok(Self::Wakeup),
             other => Err(format!("Unknown interrupt key {other}")),
@@ -252,7 +252,7 @@ async fn handle_monitor_messages(mut receiver: mpsc::Receiver<Message>) -> anyho
                 io::stdin().read_line(&mut buf).map(|_| buf)
             })
             .await??;
-            if InterruptKey::try_from(input.trim()).is_ok_and(|key| key == interrupt_key) {
+            if InterruptKey::try_from(&*input).is_ok_and(|key| key == interrupt_key) {
                 break;
             }
         }
