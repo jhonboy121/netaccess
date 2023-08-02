@@ -1,5 +1,5 @@
 # Netaccess
-A fast and robust CLI (command line interface) application written in [Rust](https://www.rust-lang.org) to manage internet access without all the hassle with <https://netaccess.iitm.ac.in>. This application is even capable of monitoring and auto authorizing your system's IP address. Note that this application is intended for use by students at IIT Madras alone, and will not work for anyone else.
+A fast, robust and interactive CLI (command line interface) application written in [Rust](https://www.rust-lang.org) to manage internet access without all the hassle with <https://netaccess.iitm.ac.in>. This application has the additional capability of monitoring and auto authorizing your system's IP address.
 
 ## Installation
 
@@ -26,11 +26,12 @@ This will print all of the subcommands and arguments along with documentation.
 ```
 netaccess --help
 ```
-This will print help for the `status` subcommand.
+For example, this will print help for the `status` subcommand.
 ```
 netaccess status --help
 ```
 
 ## Notes
-* All commands require your LDAP username and password, and there is no way to safely store it in the system.
+* This application is intended for use by students at IIT Madras alone, and will not work for anyone else.
+* All commands require your LDAP username and password as there is no way to safely store it in the system.
 * Username and password will be prompted to enter, and password input will be hidden (for your own safety) so just enter the password and hit enter.
