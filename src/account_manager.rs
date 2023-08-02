@@ -17,33 +17,40 @@ const PASSWORD_FIELD: &str = "userPassword";
 const DURATION_FIELD: &str = "duration";
 const APPROVE_BTN_FIELD: &str = "approveBtn";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct Connection {
-    time_left: Duration,
+    pub time_left: Duration,
     is_active: bool,
 }
 
-impl Connection {
-    pub fn time_left(&self) -> &Duration {
-        &self.time_left
+impl Default for Connection {
+    fn default() -> Self {
+        Self {
+            time_left: Duration::zero(),
+            is_active: false,
+        }
     }
+}
 
+impl Connection {
     pub fn is_active(&self) -> bool {
         !self.time_left.is_zero() && self.is_active
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SystemStatus {
+    pub ip: IpAddr,
+    pub connection: Connection,
+}
+
 #[derive(Debug, Clone)]
 pub struct Status {
-    system_connection: (IpAddr, Connection),
+    pub system_status: SystemStatus,
     connections: HashMap<IpAddr, Connection>,
 }
 
 impl Status {
-    pub fn system_connection(&self) -> &(IpAddr, Connection) {
-        &self.system_connection
-    }
-
     pub fn connections(&self) -> &HashMap<IpAddr, Connection> {
         &self.connections
     }
@@ -86,15 +93,12 @@ impl AccountManager {
         let index_page = self.index_page_response().await?;
         let html = index_page.text().await?;
         let mut connections = Self::parse_connections(&html)?;
-        let system_connection = (
+        let system_connection = SystemStatus {
             ip,
-            connections.remove(&ip).unwrap_or_else(|| Connection {
-                time_left: Duration::zero(),
-                is_active: false,
-            }),
-        );
+            connection: connections.remove(&ip).unwrap_or_default(),
+        };
         Ok(Status {
-            system_connection,
+            system_status: system_connection,
             connections,
         })
     }
@@ -226,10 +230,10 @@ impl AccountManager {
     ) -> Result<IpAddr, Error> {
         let status = self.status(user).await?;
 
-        let (ip, connection) = status.system_connection();
+        let SystemStatus { ip, connection } = status.system_status;
 
         if !force && connection.is_active() {
-            return Ok(*ip);
+            return Ok(ip);
         }
 
         let approve_form = HashMap::from([
@@ -251,7 +255,7 @@ impl AccountManager {
             )));
         }
         match response.url().path() {
-            INDEX_PATH => Ok(*ip),
+            INDEX_PATH => Ok(ip),
             other => Err(Error::Other(anyhow!(
                 "Unexpected URL path in approve response {other}"
             ))),

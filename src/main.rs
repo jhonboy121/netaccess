@@ -1,31 +1,22 @@
 mod account_manager;
 mod monitor;
+mod monitor_ui;
 #[cfg(target_family = "unix")]
 mod openssl_conf;
 mod user;
 
-use account_manager::{AccountManager, Connection};
+use account_manager::{AccountManager, SystemStatus};
 use anyhow::{bail, Context};
-use chrono::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
-use crossterm::{
-    cursor::{RestorePosition, SavePosition},
-    execute,
-    terminal::{Clear, ClearType},
-    ExecutableCommand,
-};
-use monitor::{Message, Monitor};
+use monitor::Monitor;
 use std::{
     fmt::{self, Display, Formatter},
     io::{self, Write},
-    net::IpAddr,
     sync::Arc,
     time,
 };
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
-};
+use tokio::sync::{mpsc, watch};
+use tokio_util::sync::CancellationToken;
 use user::User;
 
 const MIN_SUSPEND_DURATION: u64 = 30;
@@ -96,25 +87,7 @@ impl From<ApproveDuration> for usize {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InterruptKey {
-    Retry,
-    Wakeup,
-}
-
-impl TryFrom<&str> for InterruptKey {
-    type Error = String;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value.to_lowercase().trim() {
-            "r" => Ok(Self::Retry),
-            "w" => Ok(Self::Wakeup),
-            other => Err(format!("Unknown interrupt key {other}")),
-        }
-    }
-}
-
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> anyhow::Result<()> {
     #[cfg(target_family = "unix")]
     let _cnf = openssl_conf::OpenSSLConf::new()?;
@@ -157,17 +130,26 @@ async fn main() -> anyhow::Result<()> {
             if suspend_duration < MIN_SUSPEND_DURATION {
                 bail!("Suspend duration is less than minimum allowed {MIN_SUSPEND_DURATION}");
             }
-            io::stdout().execute(SavePosition)?;
+
             let user = get_user()?;
             let mut monitor = Monitor::new(&account_manager);
-            let (message_sender, message_receiver) = mpsc::channel(MSG_CHANNEL_BUF_SIZE);
+            let (status_sender, status_receiver) = watch::channel(None);
+            let (state_sender, state_receiver) = mpsc::channel(MSG_CHANNEL_BUF_SIZE);
+
+            let cancellation_token = CancellationToken::new();
+            let cancellation_token_child = cancellation_token.child_token();
+
+            let ui_handle = monitor_ui::run(status_receiver, state_receiver, cancellation_token);
             monitor.start(
                 user,
                 approve_duration.into(),
                 time::Duration::from_secs(suspend_duration),
-                message_sender,
+                status_sender,
+                state_sender,
             );
-            handle_monitor_messages(message_receiver).await?;
+            cancellation_token_child.cancelled().await;
+            monitor.stop();
+            ui_handle.await??;
         }
     }
 
@@ -176,8 +158,18 @@ async fn main() -> anyhow::Result<()> {
 
 async fn display_status(account_manager: &AccountManager, user: &User) -> anyhow::Result<()> {
     let status = account_manager.status(user).await?;
-    let (ip, connection) = status.system_connection();
-    println!("{}", create_connection_status_string(ip, connection));
+    let SystemStatus { ip, connection } = status.system_status;
+    println!(
+        "Your IP address is {ip} and {}",
+        if connection.is_active() {
+            format!(
+                "active for {}",
+                monitor_ui::format_duration(&connection.time_left)
+            )
+        } else {
+            String::from("inactive")
+        }
+    );
     let connections = status.connections();
     println!(
         "Number of other registered connections: {}",
@@ -191,125 +183,11 @@ async fn display_status(account_manager: &AccountManager, user: &User) -> anyhow
             "{}\t{ip}\t{}",
             index + 1,
             if connection.is_active() {
-                format_duration(connection.time_left())
+                monitor_ui::format_duration(&connection.time_left)
             } else {
                 String::from("Inactive or expired")
             }
         );
-    }
-    Ok(())
-}
-
-fn create_connection_status_string(ip: &IpAddr, connection: &Connection) -> String {
-    format!(
-        "Your IP address is {ip} and {}",
-        if connection.is_active() {
-            format!("active for {}", format_duration(connection.time_left()))
-        } else {
-            String::from("inactive")
-        }
-    )
-}
-
-fn format_duration(duration: &Duration) -> String {
-    let mut fragments = Vec::with_capacity(3);
-    macro_rules! push {
-        ( $unit:expr ) => {
-            fragments.push(format!("{} {}", $unit, stringify!($unit)));
-        };
-    }
-    let minutes = duration.num_minutes() % 60;
-    if minutes > 0 {
-        push!(minutes);
-    }
-    let hours = duration.num_hours() % 24;
-    if hours > 0 {
-        push!(hours);
-    }
-    let days = duration.num_days();
-    if days > 0 {
-        push!(days);
-    }
-    fragments
-        .into_iter()
-        .rev()
-        .collect::<Vec<String>>()
-        .join(", ")
-}
-
-async fn handle_monitor_messages(mut receiver: mpsc::Receiver<Message>) -> anyhow::Result<()> {
-    let restore_cursor = || {
-        execute!(
-            io::stdout(),
-            RestorePosition,
-            Clear(ClearType::FromCursorDown),
-            SavePosition
-        )
-    };
-    restore_cursor()?;
-
-    let listen_for_interrupt =
-        |interrupt_key: InterruptKey, interrupt_sender: oneshot::Sender<()>| {
-            tokio::spawn(async move {
-                loop {
-                    let input = tokio::task::spawn_blocking(|| {
-                        let mut buf = String::new();
-                        io::stdin().read_line(&mut buf).map(|_| buf)
-                    })
-                    .await??;
-                    if InterruptKey::try_from(&*input).is_ok_and(|key| key == interrupt_key) {
-                        if interrupt_sender.send(()).is_err() {
-                            bail!("Interrupt channel abruptly clossed");
-                        }
-                        break;
-                    }
-                }
-                anyhow::Ok(())
-            })
-        };
-
-    let mut interrupt_task: Option<JoinHandle<anyhow::Result<()>>> = None;
-
-    while let Some(msg) = receiver.recv().await {
-        if let Some(task) = interrupt_task.take() {
-            task.abort();
-        }
-        match msg {
-            Message::Suspended {
-                duration,
-                wake_sender,
-            } => {
-                restore_cursor()?;
-                println!("Suspended for {duration:?}");
-                println!("Enter 'W' (case insensitive) and hit Enter key to wakeup monitor");
-                interrupt_task = listen_for_interrupt(InterruptKey::Wakeup, wake_sender).into();
-            }
-            Message::CheckingStatus => {
-                restore_cursor()?;
-                println!("Checking status");
-            }
-            Message::Status { ip, connection } => {
-                restore_cursor()?;
-                println!("{}", create_connection_status_string(&ip, &connection));
-                if connection.is_active() {
-                    // We want the user to know about current active IP.
-                    execute!(io::stdout(), SavePosition)?;
-                }
-            }
-            Message::Approving(ip) => {
-                restore_cursor()?;
-                println!("Approved IP {ip}")
-            }
-            Message::Error {
-                error,
-                retry_sender,
-            } => {
-                restore_cursor()?;
-                println!("Monitoring failed : {error}");
-                println!("Enter 'R' (case insensitive) and hit Enter key to restart monitor");
-                interrupt_task = listen_for_interrupt(InterruptKey::Retry, retry_sender).into();
-            }
-        }
     }
     Ok(())
 }

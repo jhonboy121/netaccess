@@ -1,12 +1,12 @@
 [package]
 name = "netaccess"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
 local-ip-address = "0.5.3"
 reqwest = { version = "0.11.18", features = ["cookies"] }
-tokio = { version = "1.29.1", features = ["macros", "rt"] }
+tokio = { version = "1.29.1", features = ["macros", "rt-multi-thread"] }
 clap = { version = "4.3.19", features = ["derive"] }
 anyhow = "1.0.72"
 scraper = "0.17.1"
@@ -14,6 +14,8 @@ chrono = "0.4.26"
 rpassword = "7.2.0"
 thiserror = "1.0.44"
 crossterm = "0.26.1"
+tui = "0.19.0"
+tokio-util = "0.7.8"
 
 [target.'cfg(unix)'.dependencies]
 directories = "5.0.1"
