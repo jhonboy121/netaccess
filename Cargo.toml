@@ -19,3 +19,4 @@ tokio-util = "0.7.8"
 
 [target.'cfg(unix)'.dependencies]
 directories = "5.0.1"
+uuid = { version = "1.4.1", features = ["v4", "fast-rng"] }
