@@ -1,27 +1,23 @@
 use crate::{
-    account_manager::{AccountManager, Connection},
+    account_manager::{AccountManager, SystemStatus},
     user::User,
 };
 use anyhow::Context;
 use std::{net::IpAddr, sync::Arc, time::Duration};
 use tokio::{
     select,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
     time,
 };
 
 #[derive(Debug)]
-pub enum Message {
+pub enum State {
     Suspended {
         duration: Duration,
         wake_sender: oneshot::Sender<()>,
     },
     CheckingStatus,
-    Status {
-        ip: IpAddr,
-        connection: Connection,
-    },
     Approving(IpAddr),
     Error {
         error: anyhow::Error,
@@ -48,7 +44,8 @@ impl Monitor {
         user: User,
         duration_index: usize,
         suspend_duration: Duration,
-        message_sender: mpsc::Sender<Message>,
+        status_sender: watch::Sender<Option<SystemStatus>>,
+        state_sender: mpsc::Sender<State>,
     ) {
         if self.handle.is_some() {
             return;
@@ -61,7 +58,8 @@ impl Monitor {
                     &account_manager,
                     duration_index,
                     suspend_duration,
-                    &message_sender,
+                    &status_sender,
+                    &state_sender,
                 )
                 .await;
                 let Err(err) = result else {
@@ -69,8 +67,8 @@ impl Monitor {
                     continue;
                 };
                 let (retry_sender, retry_receiver) = oneshot::channel();
-                let result = message_sender
-                    .send(Message::Error {
+                let result = state_sender
+                    .send(State::Error {
                         error: err,
                         retry_sender,
                     })
@@ -94,33 +92,31 @@ impl Monitor {
         account_manager: &AccountManager,
         duration_index: usize,
         suspend_duration: Duration,
-        message_sender: &mpsc::Sender<Message>,
+        status_sender: &watch::Sender<Option<SystemStatus>>,
+        state_sender: &mpsc::Sender<State>,
     ) -> anyhow::Result<()> {
         let send_msg = |msg| async {
-            message_sender
+            state_sender
                 .send(msg)
                 .await
                 .context("Message channel closed")
         };
 
-        send_msg(Message::CheckingStatus).await?;
+        send_msg(State::CheckingStatus).await?;
         let status = account_manager.status(user).await?;
 
-        let (ip, connection) = status.system_connection();
-        send_msg(Message::Status {
-            ip: *ip,
-            connection: connection.clone(),
-        })
-        .await?;
+        status_sender
+            .send(status.system_status.into())
+            .context("State channel closed")?;
+
+        let SystemStatus { ip, connection } = status.system_status;
 
         if !connection.is_active() {
-            send_msg(Message::Approving(*ip)).await?;
-            account_manager
-                .approve(user, duration_index, false)
-                .await?;
+            send_msg(State::Approving(ip)).await?;
+            account_manager.approve(user, duration_index, false).await?;
         } else {
             let (wake_sender, wake_receiver) = oneshot::channel();
-            send_msg(Message::Suspended {
+            send_msg(State::Suspended {
                 duration: suspend_duration,
                 wake_sender,
             })
@@ -131,5 +127,11 @@ impl Monitor {
             }
         }
         Ok(())
+    }
+
+    pub fn stop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
     }
 }
