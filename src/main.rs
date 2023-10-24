@@ -13,7 +13,7 @@ use std::{
     fmt::{self, Display, Formatter},
     io::{self, Write},
     sync::Arc,
-    time,
+    time::Duration,
 };
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -95,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let account_manager = Arc::new(AccountManager::new()?);
 
-    let get_user = || {
+    let user = {
         print!("Enter username: ");
         io::stdout().flush()?;
         // user names are expected to be of the format XX19X001
@@ -107,19 +107,19 @@ async fn main() -> anyhow::Result<()> {
         let password = rpassword::prompt_password(format!("Enter password for {user}: "))
             .context("Failed to read password")?;
         anyhow::Ok(User::new(user.to_owned(), password))
-    };
+    }?;
+
+    account_manager.check_user_passowrd(&user).await?;
 
     match cli.command {
-        Command::Status => display_status(&account_manager, &get_user()?).await?,
+        Command::Status => display_status(&account_manager, &user).await?,
         Command::Approve { duration, force } => {
-            let user = get_user()?;
             let ip = account_manager
                 .approve(&user, duration.into(), force)
                 .await?;
             println!("Approved {ip} for {user} for 1 {duration} successfully");
         }
         Command::Revoke { ip } => {
-            let user = get_user()?;
             let ip = account_manager.revoke(&user, ip).await?;
             println!("Revoked {ip} for {user} successfully");
         }
@@ -131,7 +131,6 @@ async fn main() -> anyhow::Result<()> {
                 bail!("Suspend duration is less than minimum allowed {MIN_SUSPEND_DURATION}");
             }
 
-            let user = get_user()?;
             let mut monitor = Monitor::new(&account_manager);
             let (status_sender, status_receiver) = watch::channel(None);
             let (state_sender, state_receiver) = mpsc::channel(MSG_CHANNEL_BUF_SIZE);
@@ -143,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
             monitor.start(
                 user,
                 approve_duration.into(),
-                time::Duration::from_secs(suspend_duration),
+                Duration::from_secs(suspend_duration),
                 status_sender,
                 state_sender,
             );

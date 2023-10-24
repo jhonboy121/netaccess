@@ -95,14 +95,16 @@ impl Monitor {
         status_sender: &watch::Sender<Option<SystemStatus>>,
         state_sender: &mpsc::Sender<State>,
     ) -> anyhow::Result<()> {
-        let send_msg = |msg| async {
-            state_sender
-                .send(msg)
-                .await
-                .context("Message channel closed")
-        };
+        macro_rules! send_msg {
+            ( $msg:expr ) => {
+                state_sender
+                    .send($msg)
+                    .await
+                    .context("Message channel closed")?;
+            };
+        }
 
-        send_msg(State::CheckingStatus).await?;
+        send_msg!(State::CheckingStatus);
         let status = account_manager.status(user).await?;
 
         status_sender
@@ -112,15 +114,14 @@ impl Monitor {
         let SystemStatus { ip, connection } = status.system_status;
 
         if !connection.is_active() {
-            send_msg(State::Approving(ip)).await?;
+            send_msg!(State::Approving(ip));
             account_manager.approve(user, duration_index, false).await?;
         } else {
             let (wake_sender, wake_receiver) = oneshot::channel();
-            send_msg(State::Suspended {
+            send_msg!(State::Suspended {
                 duration: suspend_duration,
                 wake_sender,
-            })
-            .await?;
+            });
             select! {
                 _ = time::sleep(suspend_duration) => {}
                 _ = wake_receiver => {}

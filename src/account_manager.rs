@@ -1,6 +1,6 @@
 use crate::user::User;
-use anyhow::{anyhow, bail, Context, Result};
-use chrono::{Duration, FixedOffset, NaiveDateTime, Utc};
+use anyhow::{anyhow, bail, Context};
+use chrono::{FixedOffset, NaiveDateTime, Utc};
 use reqwest::{tls::Version, Client, ClientBuilder, Response};
 use scraper::{ElementRef, Html, Selector};
 use std::{collections::HashMap, net::IpAddr};
@@ -17,16 +17,30 @@ const PASSWORD_FIELD: &str = "userPassword";
 const DURATION_FIELD: &str = "duration";
 const APPROVE_BTN_FIELD: &str = "approveBtn";
 
+lazy_static::lazy_static! {
+    static ref INDIA_TZ: FixedOffset =
+        FixedOffset::east_opt(5 * 3600 + 30 * 60).expect("Failed to create India timezone");
+
+    static ref TBODY_SELECTOR: Selector =
+        Selector::parse("tbody").expect("Failed to create tbody selector");
+    static ref TR_SELECTOR: Selector =
+        Selector::parse("tr").expect("Failed to create tr selector");
+    static ref TD_SELECTOR: Selector =
+        Selector::parse("td").expect("Failed to create td selector");
+    static ref SPAN_SELECTOR: Selector =
+        Selector::parse("span").expect("Failed to create span selector");
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Connection {
-    pub time_left: Duration,
+    pub time_left: chrono::Duration,
     is_active: bool,
 }
 
 impl Default for Connection {
     fn default() -> Self {
         Self {
-            time_left: Duration::zero(),
+            time_left: chrono::Duration::zero(),
             is_active: false,
         }
     }
@@ -56,9 +70,7 @@ impl Status {
     }
 
     fn is_connection_active(&self, ip: &IpAddr) -> bool {
-        self.connections
-            .get(ip)
-            .is_some_and(|connection| connection.is_active())
+        self.connections.get(ip).is_some_and(Connection::is_active)
     }
 }
 
@@ -87,12 +99,20 @@ impl AccountManager {
             .map(|client| Self { client })
     }
 
+    pub async fn check_user_passowrd(&self, user: &User) -> Result<(), Error> {
+        self.login(user, true).await
+    }
+
+    fn local_ip() -> anyhow::Result<IpAddr> {
+        local_ip_address::local_ip().context("Failed to get local ip address")
+    }
+
     pub async fn status(&self, user: &User) -> Result<Status, Error> {
-        self.login(user).await?;
-        let ip = local_ip_address::local_ip().context("Failed to get local ip address")?;
+        self.login(user, false).await?;
         let index_page = self.index_page_response().await?;
         let html = index_page.text().await?;
         let mut connections = Self::parse_connections(&html)?;
+        let ip = Self::local_ip()?;
         let system_connection = SystemStatus {
             ip,
             connection: connections.remove(&ip).unwrap_or_default(),
@@ -103,8 +123,8 @@ impl AccountManager {
         })
     }
 
-    async fn login(&self, user: &User) -> Result<(), Error> {
-        if self.is_logged_in().await? {
+    async fn login(&self, user: &User, force: bool) -> Result<(), Error> {
+        if !force && self.is_logged_in().await? {
             return Ok(());
         }
         let login_form = HashMap::from([
@@ -132,25 +152,34 @@ impl AccountManager {
         }
     }
 
-    async fn is_logged_in(&self) -> Result<bool> {
+    async fn is_logged_in(&self) -> anyhow::Result<bool> {
         let response = self.index_page_response().await?;
-        if !response.status().is_success() {
-            bail!("Index page response is not a success: {response:?}");
+        if response.status().is_success() {
+            Ok(response.url().path() == INDEX_PATH)
+        } else {
+            Err(anyhow!(
+                "Index page response is not a success: {response:?}"
+            ))
         }
-        Ok(response.url().path() == INDEX_PATH)
     }
 
     async fn index_page_response(&self) -> reqwest::Result<Response> {
         self.client.get(format!("{URL}{INDEX_PATH}")).send().await
     }
 
-    fn parse_connections(html: &str) -> Result<HashMap<IpAddr, Connection>> {
-        let html = Html::parse_document(html);
-        let tbody_selector = Selector::parse("tbody").expect("Failed to create tbody selector");
-        let Some(tbody) = html.select(&tbody_selector).next() else {
-            bail!("Html does not have a tbody element")
-        };
-        let mut connections = HashMap::with_capacity(tbody.children().count() - 1);
+    fn time_now() -> NaiveDateTime {
+        Utc::now().with_timezone(&*INDIA_TZ).naive_local()
+    }
+
+    fn extract_text(element: ElementRef) -> Option<String> {
+        element
+            .children()
+            .next()
+            .and_then(|node| node.value().as_text())
+            .map(|text| text.to_string())
+    }
+
+    fn parse_tr_element(tr_element: ElementRef) -> anyhow::Result<(IpAddr, Connection)> {
         /*
         <tbody>
             <tr>
@@ -173,53 +202,49 @@ impl AccountManager {
         </tbody>
          */
 
-        let tr_selector = Selector::parse("tr").expect("Failed to create tr selector");
-        let td_selector = Selector::parse("td").expect("Failed to create td selector");
-        let span_selector = Selector::parse("span").expect("Failed to create span selector");
+        let td_elements = tr_element.select(&TD_SELECTOR);
+        // First td element is of no use either.
+        let mut td_elements = td_elements.skip(1);
 
-        let india_tz =
-            FixedOffset::east_opt((5 * 3600) + (30 * 60)).expect("Failed to create India timezone");
-        let now = Utc::now().with_timezone(&india_tz).naive_local();
+        let Some(ip_element) = td_elements.next() else {
+            bail!("Missing IP address element");
+        };
+        let ip_address = Self::extract_text(ip_element).context("Extracting IP address failed")?;
 
-        // First tr element is a header, so we skip it
-        for tr_element in tbody.select(&tr_selector).skip(1) {
-            let td_elements = tr_element.select(&td_selector);
-            // First td element is of no use either.
-            let mut td_elements = td_elements.skip(1);
-            let Some(ip_element) = td_elements.next() else {
-                bail!("Missing ip address element");
-            };
-            let ip_address =
-                Self::extract_text(ip_element).context("Extracting IP address failed")?;
-            let Some(validity_element) = td_elements.next() else {
-                bail!("Missing validity element");
-            };
-            let validity =
-                Self::extract_text(validity_element).context("Extracting status failed")?;
-            let Some(span) = tr_element.select(&span_selector).next() else {
-                bail!("Missing status element");
-            };
-            let status = Self::extract_text(span)?;
-            let validity = NaiveDateTime::parse_from_str(&validity, "%d %b %Y, %H:%M")?;
-            connections.insert(
-                ip_address.parse()?,
-                Connection {
-                    time_left: validity - now,
-                    is_active: &status == "Active",
-                },
-            );
-        }
-        Ok(connections)
+        let Some(valid_till_element) = td_elements.next() else {
+            bail!("Missing remaining duration element");
+        };
+        let valid_till = Self::extract_text(valid_till_element)
+            .context("Extracting remaining duration failed")?;
+        let valid_till = NaiveDateTime::parse_from_str(&valid_till, "%d %b %Y, %H:%M")?;
+
+        let Some(status_element) = tr_element.select(&SPAN_SELECTOR).next() else {
+            bail!("Missing status element");
+        };
+        let status = Self::extract_text(status_element).context("Extracting status failed")?;
+
+        Ok((
+            ip_address.parse::<IpAddr>()?,
+            Connection {
+                time_left: chrono::Duration::max(
+                    chrono::Duration::zero(),
+                    valid_till - Self::time_now(),
+                ),
+                is_active: &status == "Active",
+            },
+        ))
     }
 
-    fn extract_text(element: ElementRef<'_>) -> Result<String> {
-        let Some(text_node) = element.children().next() else {
-            bail!("Malfored element");
+    fn parse_connections(html: &str) -> anyhow::Result<HashMap<IpAddr, Connection>> {
+        let html = Html::parse_document(html);
+        let Some(tbody) = html.select(&TBODY_SELECTOR).next() else {
+            bail!("Html does not have a tbody element")
         };
-        let Some(text) = text_node.value().as_text() else {
-            bail!("Malfored text node");
-        };
-        Ok(text.to_string())
+        tbody
+            .select(&TR_SELECTOR)
+            .skip(1)
+            .map(Self::parse_tr_element)
+            .collect()
     }
 
     pub async fn approve(
@@ -269,7 +294,7 @@ impl AccountManager {
             Some(ip) => ip
                 .parse()
                 .with_context(|| format!("Ip address is malformed {ip}"))?,
-            None => local_ip_address::local_ip().context("Failed to get local ip address")?,
+            None => Self::local_ip()?,
         };
 
         if !status.is_connection_active(&ip) {

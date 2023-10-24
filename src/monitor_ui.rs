@@ -2,7 +2,7 @@ use crate::{account_manager::SystemStatus, monitor::State};
 use anyhow::bail;
 use crossterm::{
     cursor::{Hide, Show},
-    event::{Event, KeyCode},
+    event::{self, Event, KeyCode},
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -27,24 +27,23 @@ use tui::{
 };
 
 pub fn format_duration(duration: &chrono::Duration) -> String {
+    if duration.is_zero() {
+        return String::new();
+    }
     let mut fragments = Vec::with_capacity(3);
     macro_rules! push {
         ( $unit:expr ) => {
-            fragments.push(format!("{} {}", $unit, stringify!($unit)));
+            if $unit > 0 {
+                fragments.push(format!("{} {}", $unit, stringify!($unit)));
+            }
         };
     }
     let minutes = duration.num_minutes() % 60;
-    if minutes > 0 {
-        push!(minutes);
-    }
+    push!(minutes);
     let hours = duration.num_hours() % 24;
-    if hours > 0 {
-        push!(hours);
-    }
+    push!(hours);
     let days = duration.num_days();
-    if days > 0 {
-        push!(days);
-    }
+    push!(days);
     fragments
         .into_iter()
         .rev()
@@ -112,23 +111,28 @@ impl KeyInputReader {
     {
         let signal: Arc<AtomicBool> = Arc::default();
         let signal_clone = Arc::clone(&signal);
-        let handle = task::spawn_blocking(move || {
-            while !signal_clone.load(Ordering::SeqCst) {
-                if !crossterm::event::poll(Self::POLL_DURATION)? {
-                    continue;
-                }
-                let Event::Key(key) = crossterm::event::read()? else {
-                    continue;
-                };
-                let Ok(input) = KeyInput::try_from(key.code) else {
-                    continue;
-                };
-                action(input);
-                break;
-            }
-            Ok(())
-        });
+        let handle = task::spawn_blocking(move || Self::poll_read(signal_clone, action));
         Self { handle, signal }
+    }
+
+    fn poll_read<F>(signal: Arc<AtomicBool>, action: F) -> crossterm::Result<()>
+    where
+        F: FnOnce(KeyInput) + Send + 'static,
+    {
+        while !signal.load(Ordering::SeqCst) {
+            if !event::poll(Self::POLL_DURATION)? {
+                continue;
+            }
+            let Event::Key(key) = event::read()? else {
+                continue;
+            };
+            let Ok(input) = KeyInput::try_from(key.code) else {
+                continue;
+            };
+            action(input);
+            break;
+        }
+        Ok(())
     }
 
     async fn cancel(self) -> Result<io::Result<()>, task::JoinError> {
